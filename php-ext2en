@@ -2,17 +2,17 @@
 #===============================================================================
 #
 #          FILE: php-ext2en
-# 
-#         USAGE: ./php-ext2en 
-# 
-#   DESCRIPTION: 
-# 
+#
+#         USAGE: ./php-ext2en
+#
+#   DESCRIPTION:
+#
 #       OPTIONS: ---
-#  REQUIREMENTS: php-config (from php), getopt (from util-linux)
+#  REQUIREMENTS: php-config (from php), getopt (from util-linux), pacman
 #          BUGS: ---
 #         NOTES: ---
 #        AUTHOR: Piotr Roogża (dracorp), rogoza dot piotr at gmail dot com
-#  ORGANIZATION: 
+#  ORGANIZATION:
 #       CREATED: 13.01.2014 01:22
 #      REVISION:  ---
 #===============================================================================
@@ -28,7 +28,7 @@ fi
 _get_php-config () { #{{{
     if [ -n $1 ]; then
         php-config --configure-options | awk -F= -vCONFIG=$1 \
-            'BEGIN {RS="\\s+"} /CONFIG/ {print $2}' 
+            'BEGIN {RS="\\s+"} $0 ~ CONFIG {print $2}'
     else
         return
     fi
@@ -49,7 +49,7 @@ fi
 # @default value, uncomment if php-config failed
 # confdir='/etc/php/conf.d'
 if [ -z "$confdir" ]; then
-    if [ -z "${confdir=_get_php-config(--with-config-file-scan-dir)}" ]; then
+    if [ -z "${confdir=$(_get_php-config --with-config-file-scan-dir)}" ]; then
         echo_error "Variable 'confdir' is empty."
         exit 1
     fi
@@ -60,22 +60,23 @@ if [ ! -d "$confdir" ]; then
 fi
 # Available extensions, generated with -g option
 # If a directory doesn't exist then the program crate it
-# @default value 
+# @default value
 # availableconfdir='/etc/php/conf.d-available'
 availableconfdir="${confdir%-enabled}-available"
 
+# suffixes
+lib_suffix='.so'                                # extenions/libs
+conf_suffix='.ini'                              # dosini configuration
 _get_pkgdesc () { #{{{
+    # currently only for Arch Linux
     local file=$1
-    pacman -Qoq $file | LC_ALL=C xargs pacman -Qi | awk -F': ' '/Description/ {print $2}')
+    pacman -Qoq $file | LC_ALL=C xargs pacman -Qi | awk -F': ' '/Description/ {print $2}'
 }	#}}} ----------  end of function _get_pkgdesc  ----------
 _generate_available_extensions () #{{{
 {
     if [ ! -d $availableconfdir ]; then
         mkdir $availableconfdir || { echo_error "Cannot create directory: $availableconfdir"; exit 1; }
     fi
-    ## suffixes
-    local lib_suffix='.so'                                # extenions
-    local conf_suffix='.ini'                              # dosini configuration
     ## generates available extenions
     while read libs; do
         lib=${libs%$lib_suffix}                         # without .so
@@ -87,22 +88,21 @@ _generate_available_extensions () #{{{
 
         if [ ! -r "$availableconfdir/$lib$conf_suffix" ]; then
             description=$(_get_pkgdesc $extdir/$libs)
-            echo "; $description" > "$availableconfdir/$lib$conf_suffix"
+            if [ -n "$description" ]; then
+                echo "; $description" > "$availableconfdir/$lib$conf_suffix"
+            fi
             echo "extension=$libs" >> "$availableconfdir/$lib$conf_suffix"
         fi
     done < <(ls $extdir)
 }	#}}} ----------  end of function _generate_available_extensions  ----------
 _enable_extension () { #{{{
-    ## suffixes
     local extension=$1
     if [ -z "$extension" ]; then
         return 1
     fi
-    local conf_suffix='.ini'                              # dosini configuration
     if [[ ! "$extension" =~ $conf_suffix$ ]]; then
         extension+=$conf_suffix
     fi
-    exit
     if [ ! -L $availableconfdir/$extension -a ! -r $confdir/$extension ]; then
         ln -s $availableconfdir/$extension $confdir/$extension
     fi
@@ -115,7 +115,6 @@ _disable_extension () { #{{{
     if [[ ! "$extension" =~ $conf_suffix$ ]]; then
         extension+=$conf_suffix
     fi
-    local conf_suffix='.ini'                              # dosini configuration
     if [ -L $confdir/$extension ]; then
         rm -f $confdir/$extension
     fi
