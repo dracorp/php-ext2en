@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+#===============================================================================
+#
+#          FILE: php-ext2en
+# 
+#         USAGE: ./php-ext2en 
+# 
+#   DESCRIPTION: 
+# 
+#       OPTIONS: ---
+#  REQUIREMENTS: php-config (from php), getopt (from util-linux)
+#          BUGS: ---
+#         NOTES: ---
+#        AUTHOR: Piotr Roogża (dracorp), rogoza dot piotr at gmail dot com
+#  ORGANIZATION: 
+#       CREATED: 13.01.2014 01:22
+#      REVISION:  ---
+#===============================================================================
+
+if [ $UID -ne 0 ]; then
+    echo "Root privilages required." >&2
+    exit 1
+fi
+
+#-------------------------------------------------------------------------------
+# Configuration
+#-------------------------------------------------------------------------------
+_get_php-config () { #{{{
+    if [ -n $1 ]; then
+        php-config --configure-options | awk -F= -vCONFIG=$1 \
+            'BEGIN {RS="\\s+"} /CONFIG/ {print $2}' 
+    else
+        return
+    fi
+}	#}}} ----------  end of function _get_php-config  ----------
+echo_error () { #{{{
+    echo $@ >&2
+}	#}}} ----------  end of function echo_error  ----------
+# Extensions dir
+# @default value, uncomment if php-config failed
+# extdir='/usr/lib/php/modules'
+if [ -z "$extdir" ]; then
+    if [ -z "${extdir=$(php-config --extension-dir)}" ]; then
+        echo_error "Variable 'extdir' is empty."
+        exit 1
+    fi
+fi
+# Scanned directory for additional configuration
+# @default value, uncomment if php-config failed
+# confdir='/etc/php/conf.d'
+if [ -z "$confdir" ]; then
+    if [ -z "${confdir=_get_php-config(--with-config-file-scan-dir)}" ]; then
+        echo_error "Variable 'confdir' is empty."
+        exit 1
+    fi
+fi
+if [ ! -d "$confdir" ]; then
+    echo_error "A directory '$confdir' doesn't exist."
+    exit 1
+fi
+# Available extensions, generated with -g option
+# If a directory doesn't exist then the program crate it
+# @default value 
+# availableconfdir='/etc/php/conf.d-available'
+availableconfdir="${confdir%-enabled}-available"
+
+_get_pkgdesc () { #{{{
+    local file=$1
+    pacman -Qoq $file | LC_ALL=C xargs pacman -Qi | awk -F': ' '/Description/ {print $2}')
+}	#}}} ----------  end of function _get_pkgdesc  ----------
+_generate_available_extensions () #{{{
+{
+    if [ ! -d $availableconfdir ]; then
+        mkdir $availableconfdir || { echo_error "Cannot create directory: $availableconfdir"; exit 1; }
+    fi
+    ## suffixes
+    local lib_suffix='.so'                                # extenions
+    local conf_suffix='.ini'                              # dosini configuration
+    ## generates available extenions
+    while read libs; do
+        lib=${libs%$lib_suffix}                         # without .so
+        if [ -r "$confdir/$lib$conf_suffix" -a ! -r "$availableconfdir/$lib$conf_suffix" ]; then
+            # copy existing configuration file
+            cp "$confdir/$lib$conf_suffix" "$availableconfdir/$lib$conf_suffix"
+            continue
+        fi
+
+        if [ ! -r "$availableconfdir/$lib$conf_suffix" ]; then
+            description=$(_get_pkgdesc $extdir/$libs)
+            echo "; $description" > "$availableconfdir/$lib$conf_suffix"
+            echo "extension=$libs" >> "$availableconfdir/$lib$conf_suffix"
+        fi
+    done < <(ls $extdir)
+}	#}}} ----------  end of function _generate_available_extensions  ----------
+_enable_extension () { #{{{
+    ## suffixes
+    local extension=$1
+    if [ -z "$extension" ]; then
+        return 1
+    fi
+    local conf_suffix='.ini'                              # dosini configuration
+    if [[ ! "$extension" =~ $conf_suffix$ ]]; then
+        extension+=$conf_suffix
+    fi
+    exit
+    if [ ! -L $availableconfdir/$extension -a ! -r $confdir/$extension ]; then
+        ln -s $availableconfdir/$extension $confdir/$extension
+    fi
+}	#}}} -------  end of function _enable_extension  ----------
+_disable_extension () { #{{{
+    local extension=$1
+    if [ -z "$extension" ]; then
+        return 1
+    fi
+    if [[ ! "$extension" =~ $conf_suffix$ ]]; then
+        extension+=$conf_suffix
+    fi
+    local conf_suffix='.ini'                              # dosini configuration
+    if [ -L $confdir/$extension ]; then
+        rm -f $confdir/$extension
+    fi
+}	#}}} -------  end of function _disable_extension  ----------
+PROGRAM_PARAMS='ge:d:h'
+set -- $(getopt $PROGRAM_PARAMS $*)
+
+if [ $# -eq 0 ]; then
+    exit
+fi
+while getopts $PROGRAM_PARAMS OPT; do
+	case $OPT in
+        g)
+            _generate_available_extensions
+            exit
+            ;;
+        e)
+            _enable_extension $OPTARG
+            exit
+            ;;
+        d)
+            _disable_extension $OPTARG
+            exit
+            ;;
+        h)
+            _help
+            exit
+            ;;
+    esac
+done
+
+# remove all before -- in program parameters
+set -- ${*##*--}
+
+if [ $# -eq 0 ]; then
+    exit
+fi
+filename=$(basename $0 .sh)
+if [ "$filename" == "php-ext2en" ]; then
+    for extension in $*; do
+        _enable_extension $extension
+    done
+elif [ "$filename" == "php-ext2dis" ]; then
+    for extension in $*; do
+        _disable_extension $extension
+    done
+fi
