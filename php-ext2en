@@ -17,13 +17,15 @@
 #      REVISION:  ---
 #===============================================================================
 
-if [ $UID -ne 0 ]; then
-    echo "Root privilages required." >&2
-    exit 1
-fi
+#-------------------------------------------------------------------------------
+# Global variables
+#-------------------------------------------------------------------------------
+extdir=''
+confdir=''
+availableconfdir=''
 
 #-------------------------------------------------------------------------------
-# Configuration
+# Main
 #-------------------------------------------------------------------------------
 _get_php-config () { #{{{
     if [ -n $1 ]; then
@@ -36,34 +38,35 @@ _get_php-config () { #{{{
 echo_error () { #{{{
     echo $@ >&2
 }	#}}} ----------  end of function echo_error  ----------
-# Extensions dir
-# @default value, uncomment if php-config failed
-# extdir='/usr/lib/php/modules'
-if [ -z "$extdir" ]; then
-    if [ -z "${extdir=$(php-config --extension-dir)}" ]; then
-        echo_error "Variable 'extdir' is empty."
+_get_configuration () { #{{{
+    # Extensions dir
+    # @default value, uncomment if php-config failed
+    # extdir='/usr/lib/php/modules'
+    if [ -z "$extdir" ]; then
+        if [ -z "${extdir=$(php-config --extension-dir)}" ]; then
+            echo_error "Variable 'extdir' is empty."
+            exit 1
+        fi
+    fi
+    # Scanned directory for additional configuration
+    # @default value, uncomment if php-config failed
+    # confdir='/etc/php/conf.d'
+    if [ -z "$confdir" ]; then
+        if [ -z "${confdir=$(_get_php-config --with-config-file-scan-dir)}" ]; then
+            echo_error "Variable 'confdir' is empty."
+            exit 1
+        fi
+    fi
+    if [ ! -d "$confdir" ]; then
+        echo_error "A directory '$confdir' doesn't exist."
         exit 1
     fi
-fi
-# Scanned directory for additional configuration
-# @default value, uncomment if php-config failed
-# confdir='/etc/php/conf.d'
-if [ -z "$confdir" ]; then
-    if [ -z "${confdir=$(_get_php-config --with-config-file-scan-dir)}" ]; then
-        echo_error "Variable 'confdir' is empty."
-        exit 1
-    fi
-fi
-if [ ! -d "$confdir" ]; then
-    echo_error "A directory '$confdir' doesn't exist."
-    exit 1
-fi
-# Available extensions, generated with -g option
-# If a directory doesn't exist then the program crate it
-# @default value
-# availableconfdir='/etc/php/conf.d-available'
-availableconfdir="${confdir%-enabled}-available"
-
+    # Available extensions, generated with -g option
+    # If a directory doesn't exist then the program crate it
+    # @default value
+    # availableconfdir='/etc/php/conf.d-available'
+    availableconfdir="${confdir%-enabled}-available"
+}	#}}} -------  end of function _get_configuration  ----------
 # suffixes
 lib_suffix='.so'                                # extenions/libs
 conf_suffix='.ini'                              # dosini configuration
@@ -119,24 +122,45 @@ _disable_extension () { #{{{
         rm -f $confdir/$extension
     fi
 }	#}}} -------  end of function _disable_extension  ----------
+_check_root () { #{{{
+    if [ $UID -ne 0 ]; then
+        echo "Root privilages required." >&2
+        exit 1
+    fi
+}	#}}} -------  end of function _check_root  ----------
+_help () { #{{{
+   if [ $# -eq 0 ]; then
+       _help usage
+       cat <<- HELP
+
+       -e extension - enable php extension
+       -d extension - disable php extension
+       -g           - generates configuration ini files for all modules
+
+       php-ext2en extensions    - enable php extensions
+       php-ext2dis extensions   - disable php extensions
+HELP
+   elif [ "$1" == usage ]; then
+       echo "Usage: php-ext2en [-e|-d] extension -g"
+   fi
+}	#}}} -------  end of function _help  ----------
+if [ $# -eq 0 ]; then
+    _help usage
+    exit
+fi
 PROGRAM_PARAMS='ge:d:h'
 set -- $(getopt $PROGRAM_PARAMS $*)
 
-if [ $# -eq 0 ]; then
-    exit
-fi
 while getopts $PROGRAM_PARAMS OPT; do
 	case $OPT in
-        g)
-            _generate_available_extensions
-            exit
-            ;;
-        e)
-            _enable_extension $OPTARG
-            exit
-            ;;
-        d)
-            _disable_extension $OPTARG
+        g|e|d)
+            _check_root
+            _get_configuration
+            case $OPT in
+                g)  _generate_available_extensions ;;
+                e) _enable_extension $OPTARG ;;
+                d) _disable_extension $OPTARG;;
+            esac
             exit
             ;;
         h)
@@ -153,6 +177,8 @@ if [ $# -eq 0 ]; then
     exit
 fi
 filename=$(basename $0 .sh)
+_check_root
+_get_configuration
 if [ "$filename" == "php-ext2en" ]; then
     for extension in $*; do
         _enable_extension $extension
