@@ -59,6 +59,8 @@ _get_configuration () { #{{{
 # suffixes
 lib_suffix='.so'                                # extenions/libs
 conf_suffix='.ini'                              # dosini configuration
+action=
+option=
 _get_pkgdesc () { #{{{
     # currently only for Arch Linux
     local file=$1
@@ -73,8 +75,12 @@ _generate_available_extensions () #{{{
     while read libs; do
         lib=${libs%$lib_suffix}                         # without .so
         if [ -r "$confdir/$lib$conf_suffix" -a ! -r "$availableconfdir/$lib$conf_suffix" ]; then
-            # copy existing configuration file
-            cp "$confdir/$lib$conf_suffix" "$availableconfdir/$lib$conf_suffix"
+            # copy/move existing configuration file
+            local _command=cp
+            if [ "$move_files" == true ]; then
+                _command=mv
+            fi
+            $_command "$confdir/$lib$conf_suffix" "$availableconfdir/$lib$conf_suffix"
             continue
         fi
 
@@ -92,11 +98,15 @@ _enable_extension () { #{{{
     if [ -z "$extension" ]; then
         return 1
     fi
-    if [[ ! "$extension" =~ $conf_suffix$ ]]; then
-        extension+=$conf_suffix
-    fi
-    if [ ! -L $availableconfdir/$extension -a ! -r $confdir/$extension ]; then
-        ln -s $availableconfdir/$extension $confdir/$extension
+    if [ "$extension" == '-a' ]; then
+        ln -s $availableconfdir/* -d $confdir 2>/dev/null
+    else
+        if [[ ! "$extension" =~ $conf_suffix$ ]]; then
+            extension+=$conf_suffix
+        fi
+        if [ ! -L $availableconfdir/$extension -a ! -r $confdir/$extension ]; then
+            ln -s $availableconfdir/$extension $confdir/$extension
+        fi
     fi
 }	#}}} -------  end of function _enable_extension  ----------
 _disable_extension () { #{{{
@@ -104,11 +114,15 @@ _disable_extension () { #{{{
     if [ -z "$extension" ]; then
         return 1
     fi
-    if [[ ! "$extension" =~ $conf_suffix$ ]]; then
-        extension+=$conf_suffix
-    fi
-    if [ -L $confdir/$extension ]; then
-        rm -f $confdir/$extension
+    if [ "$extension" == '-a' ]; then
+        find $confdir -type l -exec rm -f '{}' ';'
+    else
+        if [[ ! "$extension" =~ $conf_suffix$ ]]; then
+            extension+=$conf_suffix
+        fi
+        if [ -L $confdir/$extension ]; then
+            rm -f $confdir/$extension
+        fi
     fi
 }	#}}} -------  end of function _disable_extension  ----------
 _check_root () { #{{{
@@ -133,47 +147,72 @@ HELP
        echo "Usage: php-ext2en [-e|-d] extension -g"
    fi
 }	#}}} -------  end of function _help  ----------
+_cli () { #{{{
+    local extensions=$*
+    _check_root
+    _get_configuration
+    if [ "$filename" == "php-ext2en" ]; then
+        for extension in $extensions; do
+            _enable_extension $extension
+        done
+    elif [ "$filename" == "php-ext2dis" ]; then
+        for extension in $extensions; do
+            _disable_extension $extension
+        done
+    fi
+}	#}}} ----------  end of function _cli  ----------
 if [ $# -eq 0 ]; then
     _help usage
     exit
 fi
-PROGRAM_PARAMS='ge:d:h'
+PROGRAM_PARAMS='ge:d:hma'
 set -- $(getopt $PROGRAM_PARAMS $*)
 
 while getopts $PROGRAM_PARAMS OPT; do
 	case $OPT in
-        g|e|d)
-            _check_root
-            _get_configuration
-            case $OPT in
-                g)  _generate_available_extensions ;;
-                e) _enable_extension $OPTARG ;;
-                d) _disable_extension $OPTARG;;
-            esac
-            exit
+        a)  all_extensions=true                 # enable/disable all extensions
             ;;
-        h)
-            _help
+        m)  move_files=true                     # while generate config files move all system files
+            ;;
+        g)  action=generate_files
+            ;;
+        e)  action=enable_extension
+            extension=$OPTARG
+            ;;
+        d)  action=disable_extension
+            extension=$OPTARG
+            ;;
+        h)  _help
             exit
             ;;
     esac
 done
+case $action in
+    *_extension|generate_files)
+        _check_root
+        _get_configuration
+        case $action in
+            enable_extension)  _enable_extension $extension
+                ;;
+            disable_extension) _disable_extension $extension
+                ;;
+            generate_files) _generate_available_extensions
+                ;;
+        esac
+        exit
+        ;;
+    *)  _help usage
+        exit
+        ;;
+esac
 
-# remove all before -- in program parameters
+# remove all before -- in $*
 set -- ${*##*--}
 
 if [ $# -eq 0 ]; then
     exit
+else
+    extensions=$*
 fi
 filename=$(basename $0 .sh)
-_check_root
-_get_configuration
-if [ "$filename" == "php-ext2en" ]; then
-    for extension in $*; do
-        _enable_extension $extension
-    done
-elif [ "$filename" == "php-ext2dis" ]; then
-    for extension in $*; do
-        _disable_extension $extension
-    done
-fi
+_cli $extensions
