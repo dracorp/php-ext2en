@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+#===============================================================================
+#
+#          FILE: php-ext2
+#
+#         USAGE: ./php-ext2
+#
+#   DESCRIPTION: Enables or disables PHP extensions
+#
+#  REQUIREMENTS: see README.md
+#          BUGS: ---
+#         NOTES: ---
+#        AUTHOR: Piotr Roogża (dracorp), rogoza dot piotr at gmail dot com
+#  ORGANIZATION:
+#       CREATED: 13.01.2014 01:22
+#      REVISION:  ---
+#===============================================================================
+# suffixes
+lib_suffix='.so'                                # extenions/libs
+conf_suffix='.ini'                              # dosini configuration
+# Program name
+program_name=php-ext2
+program_name2enable='php-ext2-en'
+program_name2disable='php-ext2-dis'
+# for dialog
+tempfile=`(tempfile) 2>/dev/null` || tempfile=/tmp/test$$
+trap "rm -f $tempfile" 0 $SIG_NONE $SIG_HUP $SIG_INT $SIG_TRAP $SIG_TERM
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _get_php-config
+#   DESCRIPTION:  get php configuration via php-config, only for --configure-options
+#    PARAMETERS:  none
+#-------------------------------------------------------------------------------
+_get_php-config () { #{{{
+    if [ -n $1 ]; then
+        php-config --configure-options | awk -F= -vCONFIG=$1 \
+            'BEGIN {RS="\\s+"} $0 ~ CONFIG {print $2}'
+    else
+        return 1
+    fi
+}	#}}} ----------  end of function _get_php-config  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  echo_2
+#   DESCRIPTION:  display to stderr
+#    PARAMETERS:  none
+#-------------------------------------------------------------------------------
+echo_2 () { #{{{
+    echo $@ >&2
+}	#}}} ----------  end of function echo_2  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _get_configuration
+#   DESCRIPTION:  setting various variables e.g. extdir, confdir
+#    PARAMETERS:  none
+#-------------------------------------------------------------------------------
+_get_configuration () { #{{{
+    # Extensions dir
+    # @default value, uncomment if php-config failed
+    # extdir='/usr/lib/php/modules'
+    if [ -z "$extdir" ]; then
+        if [ -z "${extdir=$(php-config --extension-dir)}" ]; then
+            echo_2 "Variable 'extdir' is empty."
+            exit 1
+        fi
+    fi
+    # Scanned directory for additional configuration
+    # @default value, uncomment if php-config failed
+    # confdir='/etc/php/conf.d'
+    if [ -z "$confdir" ]; then
+        if [ -z "${confdir=$(_get_php-config --with-config-file-scan-dir)}" ]; then
+            echo_2 "Variable 'confdir' is empty."
+            exit 1
+        fi
+    fi
+    if [ ! -d "$confdir" ]; then
+        echo_2 "A directory '$confdir' doesn't exist."
+        exit 1
+    fi
+    # Available extensions, generated with -g option
+    # If a directory doesn't exist then the program crate it
+    # @default value
+    # availableconfdir='/etc/php/conf.d-available'
+    availableconfdir="${confdir%-enabled}-available"
+}	#}}} -------  end of function _get_configuration  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _get_pkgdesc
+#   DESCRIPTION:  get package description for a *.so file
+#    PARAMETERS:  filename
+#        RETURN:  setting global $package and $description
+#-------------------------------------------------------------------------------
+_get_pkgdesc () { #{{{
+    # currently only for Arch Linux
+    local file=$1
+    if [ -z "$file" ]; then
+        return 1
+    fi
+    package=$( pacman -Qoq $file 2>/dev/null ) || return
+    description=$( LC_ALL=C pacman -Qi $package | awk -F': ' '/Description/ {print $2}' )
+}	#}}} ----------  end of function _get_pkgdesc  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _generate_available_extensions
+#   DESCRIPTION:  generate ini files for all *.so files
+#    PARAMETERS:  none
+#-------------------------------------------------------------------------------
+_generate_available_extensions () #{{{
+{
+    if [ ! -d $availableconfdir ]; then
+        mkdir $availableconfdir || { echo_2 "Cannot create directory: $availableconfdir"; exit 1; }
+    fi
+    local libs lib
+    # generates available extenions
+    while read libs; do
+        lib=${libs%$lib_suffix}                         # without .so
+        if [ -r "$confdir/$lib$conf_suffix" -a ! -r "$availableconfdir/$lib$conf_suffix" ]; then
+            # copy/move existing configuration file
+            local _command=cp
+            if [ "$move_files" == true ]; then
+                _command=mv
+            fi
+            $_command "$confdir/$lib$conf_suffix" "$availableconfdir/$lib$conf_suffix"
+            continue
+        fi
+
+        if [ ! -r "$availableconfdir/$lib$conf_suffix" ]; then
+            _get_pkgdesc $extdir/$libs
+            if [ -n "$description" ]; then
+                :> "$availableconfdir/$lib$conf_suffix"
+                echo "; @package: $package" >> "$availableconfdir/$lib$conf_suffix"
+                echo "; @description: $description" >> "$availableconfdir/$lib$conf_suffix"
+            fi
+            echo "extension=$libs" >> "$availableconfdir/$lib$conf_suffix"
+        fi
+    done < <(ls $extdir)
+exit 
+}	#}}} ----------  end of function _generate_available_extensions  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _enable_extension
+#   DESCRIPTION:  enable ona or all php extension
+#    PARAMETERS:  name of extension or 'all'
+#-------------------------------------------------------------------------------
+_enable_extension () { #{{{
+    local extension=$1
+    if [ -z "$extension" ]; then
+        return 1
+    fi
+    if [ "$extension" == 'all' ]; then
+        ln -s $availableconfdir/* -d $confdir 2>/dev/null
+    else
+        if [[ ! "$extension" =~ $conf_suffix$ ]]; then
+            extension+=$conf_suffix
+        fi
+        if [ ! -L $availableconfdir/$extension -a ! -r $confdir/$extension ]; then
+            ln -s $availableconfdir/$extension $confdir/$extension
+        fi
+    fi
+}	#}}} -------  end of function _enable_extension  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _disable_extension
+#   DESCRIPTION:  disable one or all php extension
+#    PARAMETERS:  name of extension or 'all'
+#-------------------------------------------------------------------------------
+_disable_extension () { #{{{
+    local extension=$1
+    if [ -z "$extension" ]; then
+        return 1
+    fi
+    if [ "$extension" == 'all' ]; then
+        find $confdir -type l -exec rm -f '{}' ';'
+    else
+        if [[ ! "$extension" =~ $conf_suffix$ ]]; then
+            extension+=$conf_suffix
+        fi
+        if [ -L $confdir/$extension ]; then
+            rm -f $confdir/$extension
+        fi
+    fi
+}	#}}} -------  end of function _disable_extension  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _check_root
+#   DESCRIPTION:  check for root privilages
+#    PARAMETERS:  none
+#-------------------------------------------------------------------------------
+_check_root () { #{{{
+    if [ $UID -ne 0 ]; then
+        echo "Root privilages required." >&2
+        exit 1
+    fi
+}	#}}} -------  end of function _check_root  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _help
+#   DESCRIPTION:  print help
+#    PARAMETERS:  none | usage
+#-------------------------------------------------------------------------------
+_help () { #{{{
+   if [ $# -eq 0 ]; then
+       _help usage
+       cat <<- HELP
+
+       -e extension - enable php extension
+       -d extension - disable php extension
+            all     - enable/disable all php extensions
+
+       -g           - generates configuration ini files for all modules
+       -m           - move existing ini files when generating the available configurations
+
+       $program_name2enable extensions    - enable php extensions
+       $program_name2disable extensions   - disable php extensions
+
+       -h - print this help
+HELP
+   elif [ "$1" == usage ]; then
+       echo "Usage: $program_name [-e|-d] extension|all [-g|-m] [-h]"
+   fi
+}	#}}} -------  end of function _help  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _cli
+#   DESCRIPTION:  command line interface, for call the program without '-e|-d' options
+#    PARAMETERS:  name of extension(s)
+#-------------------------------------------------------------------------------
+_cli () { #{{{
+    local extensions=$*
+    _check_root
+    _get_configuration
+    if [ "$filename" == "$program_name2enable" ]; then
+        for extension in $extensions; do
+            _enable_extension $extension
+        done
+    elif [ "$filename" == "$program_name2disable" ]; then
+        for extension in $extensions; do
+            _disable_extension $extension
+        done
+    fi
+}	#}}} ----------  end of function _cli  ----------
+#---  FUNCTION  ----------------------------------------------------------------
+#          NAME:  _cli_dialog
+#   DESCRIPTION:  dialog interface
+#    PARAMETERS:  none
+#-------------------------------------------------------------------------------
+_cli_dialog () { #{{{
+    if ! which dialog &>/dev/null; then
+        echo_2 "Program dialog not found."
+        exit 1
+    fi
+    echo TODO
+    exit 1
+}	#}}} ----------  end of function _cli_dialog  ----------
+if [ $# -eq 0 ]; then
+    _help usage
+    exit
+fi
+PROGRAM_PARAMS='ge:d:hmai'
+set -- $(getopt $PROGRAM_PARAMS $*)
+filename=$(basename $0 .sh)
+
+while getopts $PROGRAM_PARAMS OPT; do
+	case $OPT in
+        m)  move_files=true                     # while generate config files move all system files
+            ;;
+        g)  action=generate_files
+            ;;
+        e)  action=enable_extension
+            extension=$OPTARG
+            ;;
+        d)  action=disable_extension
+            extension=$OPTARG
+            ;;
+        i)  dialog_interface=true
+            ;;
+        h)  _help
+            exit
+            ;;
+    esac
+done
+case $action in
+    *_extension|generate_files)
+        _check_root
+        _get_configuration
+        case $action in
+            enable_extension)  _enable_extension $extension
+                ;;
+            disable_extension) _disable_extension $extension
+                ;;
+            generate_files) _generate_available_extensions
+                ;;
+        esac
+        exit
+        ;;
+esac
+
+if [ "$dialog_interface" == true ]; then
+    _cli_dialog
+else
+    # remove all before -- in $*
+    set -- ${*##*--}
+
+    if [ $# -eq 0 ]; then
+        exit
+    else
+        extensions=$*
+    fi
+    _cli $extensions
+fi
